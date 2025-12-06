@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"sw/global"
 	"sw/model/node"
 	"sw/model/service"
@@ -39,14 +40,27 @@ func InitKongTiao() {
 	global.DB.Where("id = ?", 4).First(&senserService)
 
 	client := resty.New().SetTimeout(3 * time.Second).SetBaseURL("http://127.0.0.1:9020").SetAuthToken("MASTER_TOKEN_123456").SetDebug(true)
-	opcClient := global.OpcGateway.GetClient(fmt.Sprintf("%d", senserService.ID))
-	if opcClient == nil {
-		return
-	}
 
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
+		// endpoint := fmt.Sprintf("opc.tcp://%s", senserService.Opc)
+		ctx := context.Background()
+		// opc创建连接
+		opcClient, err := opcua.NewClient(senserService.Opc,
+			opcua.SecurityMode(ua.MessageSecurityModeNone),
+			opcua.SecurityPolicy(ua.SecurityPolicyURINone),
+			opcua.AutoReconnect(true),
+		)
+		if err != nil {
+			panic(err)
+		}
+
+		if err := opcClient.Connect(ctx); err != nil {
+			log.Fatalf("❌ 连接失败: %v", err)
+		}
+		// defer client.Close(ctx)
+
 		for i := 0; i < 17; i++ {
 			var nodes []*node.NodeModel
 			data := map[string]any{}
@@ -74,9 +88,9 @@ func InitKongTiao() {
 						},
 					}
 					var resp *ua.ReadResponse
-					c := opcClient.GetClient()
-					if c != nil {
-						resp, err = c.Read(context.Background(), req)
+
+					if opcClient != nil {
+						resp, err = opcClient.Read(context.Background(), req)
 						if err != nil {
 							fmt.Println("===============空调读取2", err)
 							data["isOnline"] = false
@@ -84,7 +98,7 @@ func InitKongTiao() {
 						}
 
 						switch {
-						case err == io.EOF && c.State() != opcua.Closed:
+						case err == io.EOF && opcClient.State() != opcua.Closed:
 							fmt.Println("===============空调读取3")
 							// has to be retried unless user closed the connection
 							continue
@@ -149,16 +163,16 @@ func InitKongTiao() {
 						},
 					}
 					var resp *ua.ReadResponse
-					c := opcClient.GetClient()
-					if c != nil {
-						resp, err = c.Read(context.Background(), req)
+					// c := opcClient.GetClient()
+					if opcClient != nil {
+						resp, err = opcClient.Read(context.Background(), req)
 						if err != nil {
 							data["isOnline"] = false
 							continue
 						}
 
 						switch {
-						case err == io.EOF && c.State() != opcua.Closed:
+						case err == io.EOF && opcClient.State() != opcua.Closed:
 							// has to be retried unless user closed the connection
 							continue
 
@@ -254,6 +268,7 @@ func InitKongTiao() {
 			msg.Data = data
 			global.RecChanel <- msg
 		}
+		opcClient.Close(ctx)
 	}
 
 }
