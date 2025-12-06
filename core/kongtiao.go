@@ -41,7 +41,7 @@ func InitKongTiao() {
 
 	client := resty.New().SetTimeout(3 * time.Second).SetBaseURL("http://127.0.0.1:9020").SetAuthToken("MASTER_TOKEN_123456").SetDebug(true)
 
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
 		// endpoint := fmt.Sprintf("opc.tcp://%s", senserService.Opc)
