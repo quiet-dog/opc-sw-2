@@ -38,7 +38,7 @@ func InitKongTiao() {
 	var senserService service.ServiceModel
 	global.DB.Where("id = ?", 4).First(&senserService)
 
-	client := resty.New().SetTimeout(3 * time.Second).SetBaseURL("http://127.0.0.1:9020").SetAuthToken("MASTER_TOKEN_123456")
+	client := resty.New().SetTimeout(3 * time.Second).SetBaseURL("http://127.0.0.1:9020").SetAuthToken("MASTER_TOKEN_123456").SetDebug(true)
 	opcClient := global.OpcGateway.GetClient(fmt.Sprintf("%d", senserService.ID))
 	if opcClient == nil {
 		return
@@ -247,7 +247,8 @@ func InitKongTiao() {
 			}
 			fmt.Println("============空调数据发送")
 			fmt.Println(data)
-			client.R().SetBody(data).Post("/manage/kongTiaoData")
+			// 传输json
+			client.R().SetHeader("Content-Type", "application/json").SetBody(data).Post("/manage/kongTiaoData")
 			msg := global.RecHandler{}
 			msg.Type = global.KONGTIAO
 			msg.Data = data
