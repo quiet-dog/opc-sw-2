@@ -44,7 +44,7 @@ func InitKongTiao() {
 		return
 	}
 
-	ticker := time.NewTicker(1 * time.Minute)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
 		for i := 0; i < 17; i++ {
