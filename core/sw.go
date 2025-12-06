@@ -1,0 +1,284 @@
+package core
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"math"
+	"net/http"
+	"reflect"
+	"strconv"
+	"strings"
+	"sw/global"
+	"sw/model/node"
+	"time"
+
+	"github.com/go-stomp/stomp/v3"
+	"github.com/gorilla/websocket"
+)
+
+var closeChannel = make(chan int64, 1)
+
+// WebSocketReadWriteCloser 是 gorilla/websocket.Conn 的适配器
+type WebSocketReadWriteCloser struct {
+	Conn *websocket.Conn
+}
+
+// Read 实现 io.Reader 接口
+func (w *WebSocketReadWriteCloser) Read(p []byte) (int, error) {
+	_, message, err := w.Conn.ReadMessage()
+	if err != nil {
+		return 0, err
+	}
+	n := copy(p, message)
+	return n, nil
+}
+
+// Write 实现 io.Writer 接口
+func (w *WebSocketReadWriteCloser) Write(p []byte) (int, error) {
+	err := w.Conn.WriteMessage(websocket.TextMessage, p)
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+// Close 实现 io.Closer 接口
+func (w *WebSocketReadWriteCloser) Close() error {
+	select {
+	case closeChannel <- 1:
+		// 成功发送关闭信号
+	default:
+		// 如果通道已满或已关闭，忽略，避免阻塞
+	}
+	return w.Conn.Close()
+}
+
+// DeviceDTO represents a device with various properties
+type DeviceDTO struct {
+	DeviceType           string                  `json:"deviceType"`           // 设备类型
+	DeviceID             int64                   `json:"deviceId"`             // 设备ID
+	EnvironmentAlarmInfo EnvironmentAlarmInfoDTO `json:"environmentAlarmInfo"` // 环境档案数据信息
+	EquipmentInfo        EquipmentInfoDTO        `json:"equipmentInfo"`        // 设备信息
+	DateSource           string                  `json:"dateSource"`           // 数据来源
+}
+
+// EnvironmentAlarmInfoDTO represents environment alarm information
+type EnvironmentAlarmInfoDTO struct {
+	EnvironmentID    int64   `json:"environmentId"`    // 设备ID
+	Value            float64 `json:"value"`            // 数据
+	Unit             string  `json:"unit"`             // 单位
+	Power            float64 `json:"power"`            // 功耗
+	WaterValue       float64 `json:"waterValue"`       // 用水量
+	ElectricityValue float64 `json:"electricityValue"` // 用电量
+}
+
+// EquipmentInfoDTO represents equipment information
+
+// EquipmentInfoDTO represents equipment information
+type EquipmentInfoDTO struct {
+	EquipmentID int64   `json:"equipmentId"` // 设备ID
+	ThresholdID int64   `json:"thresholdId"` // 阈值传感器ID
+	SensorName  string  `json:"sensorName"`  // 传感器名称
+	Value       float64 `json:"value"`       // 传感器值
+}
+
+func InitSw() {
+	// WebSocket 连接信息
+	url := fmt.Sprintf("ws://%s:%s/ws", global.Config.Sw.Host, global.Config.Sw.Port)
+	header := http.Header{}
+	ctx := context.Background()
+
+	go func() {
+		// 使用 gorilla/websocket 连接到服务器
+		for {
+			select {
+			case <-ctx.Done():
+				{
+					return
+				}
+			default:
+				{
+
+					conn, _, err := websocket.DefaultDialer.Dial(url, header)
+					if err != nil {
+						fmt.Printf("Failed to connect to WebSocket server: %v", err)
+						time.Sleep(5 * time.Second)
+						continue
+					}
+
+					// 包装 WebSocket 连接为 io.ReadWriteCloser
+					rwc := &WebSocketReadWriteCloser{Conn: conn}
+
+					// 使用 STOMP 客户端连接
+					stompConn, err := stomp.Connect(rwc, stomp.ConnOpt.HeartBeat(10*time.Second, 10*time.Second), // 客户端每10秒发，期望服务端每10秒发
+						stomp.ConnOpt.HeartBeatError(30*time.Second))
+					if err != nil {
+						log.Fatalf("Failed to connect to STOMP: %v", err)
+					}
+					defer stompConn.Disconnect()
+
+					log.Println("Connected to STOMP server")
+					c := global.OpcGateway.SubscribeOpc()
+					func() {
+						for {
+							select {
+							case <-closeChannel:
+								fmt.Println("close le")
+								global.OpcGateway.UnSubscribeOpc(c)
+								return
+							case msg, ok := <-c:
+								{
+
+									fmt.Println("============收到数据", msg.ID, msg.Value)
+									if !ok {
+										return
+									}
+
+									result := DeviceDTO{}
+									nodeModel := node.NodeModel{}
+									global.DB.Where("id = ?", msg.ID).First(&nodeModel)
+									// 字符串切割
+									r := strings.Split(nodeModel.Param, "-")
+									if len(r) >= 4 {
+										for i := 0; i < len(r); i++ {
+											if r[i] == "deviceType" {
+												result.DeviceType = r[i+1]
+											} else if r[i] == "environmentId" {
+												if id, err := strconv.Atoi(r[i+1]); err == nil {
+													result.EnvironmentAlarmInfo.EnvironmentID = int64(id)
+												}
+											} else if r[i] == "thresholdId" {
+												if id, err := strconv.Atoi(r[i+1]); err == nil {
+													result.EquipmentInfo.ThresholdID = int64(id)
+												}
+											} else if r[i] == "equipmentId" {
+												if id, err := strconv.Atoi(r[i+1]); err == nil {
+													result.EquipmentInfo.EquipmentID = int64(id)
+												}
+											}
+										}
+									}
+
+									rv := reflect.ValueOf(msg.Value)
+									kind := rv.Kind()
+
+									// 判断是否是数值类型
+									if (kind >= reflect.Int && kind <= reflect.Uint64) || kind == reflect.Float32 || kind == reflect.Float64 {
+										fv := rv.Convert(reflect.TypeOf(float64(0))).Float() // 转成 float64
+										fv = math.Round(fv*100) / 100                        // 保留两位小数
+
+										if result.DeviceType == "设备档案" {
+											result.EquipmentInfo.Value = fv
+										} else if result.DeviceType == "环境档案" {
+											result.EnvironmentAlarmInfo.Value = fv
+										}
+									}
+
+									// if v, ok := msg.Value.(float64); ok {
+									// 	if result.DeviceType == "设备档案" {
+									// 		result.EquipmentInfo.Value = math.Round(v*100) / 100
+									// 	} else if result.DeviceType == "环境档案" {
+									// 		result.EnvironmentAlarmInfo.Value = math.Round(v*100) / 100
+									// 	}
+									// } else if v, ok := msg.Value.(float32); ok {
+									// 	if result.DeviceType == "设备档案" {
+									// 		result.EquipmentInfo.Value = math.Round(float64(v)*100) / 100
+									// 	} else if result.DeviceType == "环境档案" {
+									// 		result.EnvironmentAlarmInfo.Value = math.Round(float64(v)*100) / 100
+									// 	}
+									// } else if v, ok := msg.Value.(uint32); ok {
+									// 	if result.DeviceType == "设备档案" {
+									// 		result.EquipmentInfo.Value = math.Round(float64(v)*100) / 100
+									// 	} else if result.DeviceType == "环境档案" {
+									// 		result.EnvironmentAlarmInfo.Value = math.Round(float64(v)*100) / 100
+									// 	}
+									// } else if v, ok := msg.Value.(int32); ok {
+									// 	if result.DeviceType == "设备档案" {
+									// 		result.EquipmentInfo.Value = math.Round(float64(v)*100) / 100
+									// 	} else if result.DeviceType == "环境档案" {
+									// 		result.EnvironmentAlarmInfo.Value = math.Round(float64(v)*100) / 100
+									// 	}
+									// } else if v, ok := msg.Value.(int); ok {
+									// 	if result.DeviceType == "设备档案" {
+									// 		result.EquipmentInfo.Value = math.Round(float64(v)*100) / 100
+									// 	} else if result.DeviceType == "环境档案" {
+									// 		result.EnvironmentAlarmInfo.Value = math.Round(float64(v)*100) / 100
+									// 	}
+									// } else if v, ok := msg.Value.(int16); ok {
+									// 	if result.DeviceType == "设备档案" {
+									// 		result.EquipmentInfo.Value = math.Round(float64(v)*100) / 100
+									// 	} else if result.DeviceType == "环境档案" {
+									// 		result.EnvironmentAlarmInfo.Value = math.Round(float64(v)*100) / 100
+									// 	}
+									// } else if v, ok := msg.Value.(int32); ok {
+									// 	if result.DeviceType == "设备档案" {
+									// 		result.EquipmentInfo.Value = math.Round(float64(v)*100) / 100
+									// 	} else if result.DeviceType == "环境档案" {
+									// 		result.EnvironmentAlarmInfo.Value = math.Round(float64(v)*100) / 100
+									// 	}
+									// } else if v, ok := msg.Value.(int64); ok {
+									// 	if result.DeviceType == "设备档案" {
+									// 		result.EquipmentInfo.Value = math.Round(float64(v)*100) / 100
+									// 	} else if result.DeviceType == "环境档案" {
+									// 		result.EnvironmentAlarmInfo.Value = math.Round(float64(v)*100) / 100
+									// 	}
+									// } else if v, ok := msg.Value.(int); ok {
+									// 	if result.DeviceType == "设备档案" {
+									// 		result.EquipmentInfo.Value = math.Round(float64(v)*100) / 100
+									// 	} else if result.DeviceType == "环境档案" {
+									// 		result.EnvironmentAlarmInfo.Value = math.Round(float64(v)*100) / 100
+									// 	}
+									// }
+
+									result.DateSource = msg.SourceTime.Format("2006-01-02 15:04:05")
+									jsonStr, err := json.Marshal(result)
+									if err != nil {
+										continue
+									}
+									fmt.Println("发送数据到后台===============", string(jsonStr))
+									// if msg.ID == 88 {
+									// 	os.Exit(0)
+									// }
+									err = stompConn.Send(global.Config.Sw.Topic, "application/json", jsonStr)
+									if err != nil {
+										break
+									}
+								}
+							case <-ctx.Done():
+								{
+									fmt.Println("======")
+									return
+								}
+							}
+						}
+					}()
+					fmt.Println("Reconnecting in 5 seconds...")
+					time.Sleep(5 * time.Second)
+				}
+			}
+		}
+
+		// // 订阅主题
+		// sub, err := stompConn.Subscribe(global.Config.Sw.Topic, stomp.AckAuto)
+		// if err != nil {
+		// 	log.Fatalf("Failed to subscribe to topic: %v", err)
+		// }
+		// defer sub.Unsubscribe()
+
+		// log.Println("Subscribed to /topic/example")
+		// d := DeviceDTO{}
+		// d.DeviceID = 1
+		// d.DeviceType = "test"
+		// d.EquipmentInfo.EquipmentID = 1
+		// d.EquipmentInfo.SensorName = "test"
+		// d.EquipmentInfo.ThresholdID = 1
+		// d.EquipmentInfo.Value = 1
+		// d.EnvironmentAlarmInfo.EnvironmentID = 1
+		// jsonStr, _ := json.Marshal(d)
+		// stompConn.Send(global.Config.Sw.Topic, "application/json", jsonStr)
+
+	}()
+
+}

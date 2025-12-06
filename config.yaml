@@ -1,0 +1,21 @@
+sqlite:
+  path: ./opc.db
+server:
+  port: 8020
+sw:
+  host: "127.0.0.1"
+  port: 9020
+  topic: "/app/deviceInfo"
+redis:
+  host: "127.0.0.1"
+  port: 6379
+  db: 0
+  password: ""
+ingorenodes:
+  - 423
+  - 422
+  - 421
+  - 425
+  - 426
+  - 427
+  - 675
