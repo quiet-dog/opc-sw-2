@@ -183,21 +183,63 @@ func (o *OpcClient) monitor() (err error) {
 	// ========================================不可订阅
 
 	o.Nodes = exitIds
-	fmt.Println("环境档案ID222", len(o.Nodes))
-	notifyCh := make(chan *opcua.PublishNotificationData, 3000)
 
-	sub, err := o.client.Subscribe(o.ctx, &opcua.SubscriptionParameters{
-		Interval:                   10 * time.Second,
-		MaxKeepAliveCount:          1,
-		LifetimeCount:              0,
-		MaxNotificationsPerPublish: 0,
-		Priority:                   0,
-	}, notifyCh)
-	if err != nil {
-		log.Fatal(err)
-		return
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+
+	// 定时器for
+	for {
+		select {
+		case <-timer.C:
+			fmt.Println("定时器触发")
+			for _, n := range exitIds {
+				nodeID, err := ua.ParseNodeID(n.Node)
+				if err != nil {
+					log.Println("解析 NodeID 失败:", n.Node, err)
+					continue
+				}
+				node := o.client.Node(nodeID)
+				val, err := node.Value(o.ctx)
+				if err != nil {
+					log.Println("读取节点值失败:", n.Node, err)
+					continue
+				}
+				fmt.Println("节点值", val)
+				if val == nil || val.Value() == nil {
+					fmt.Println("节点值为空:", n.Node)
+					continue
+				}
+				data := Data{
+					ID:         uint64(n.ID),
+					DataType:   val.Type().String(),
+					Value:      val.Value(),
+					SourceTime: val.Time(),
+				}
+				fmt.Println("节点值", data)
+				select {
+				case o.gateway <- data:
+					fmt.Println("发送到注册网关==")
+				default:
+				}
+			}
+			timer.Reset(10 * time.Second)
+		}
 	}
-	defer sub.Cancel(o.ctx)
+	// fmt.Println("环境档案ID222", len(o.Nodes))
+	// notifyCh := make(chan *opcua.PublishNotificationData, 3000)
+
+	// sub, err := o.client.Subscribe(o.ctx, &opcua.SubscriptionParameters{
+	// 	Interval:                   10 * time.Second,
+	// 	MaxKeepAliveCount:          1,
+	// 	LifetimeCount:              0,
+	// 	MaxNotificationsPerPublish: 0,
+	// 	Priority:                   0,
+	// }, notifyCh)
+	// if err != nil {
+	// 	log.Fatal(err)
+	// 	return
+	// }
+	// defer sub.Cancel(o.ctx)
 
 	// pollInterval := 10 * time.Second // 轮询间隔
 
@@ -254,119 +296,119 @@ func (o *OpcClient) monitor() (err error) {
 	// 	}
 	// }
 
-	cannotSubscribe := []string{}
-	mon := []*ua.MonitoredItemCreateRequest{}
+	// cannotSubscribe := []string{}
+	// mon := []*ua.MonitoredItemCreateRequest{}
 
-	for _, n := range exitIds {
-		nodeID, err := ua.ParseNodeID(n.Node)
-		if err != nil {
-			log.Println("解析 NodeID 失败:", n.Node, err)
-			continue
-		}
+	// for _, n := range exitIds {
+	// 	nodeID, err := ua.ParseNodeID(n.Node)
+	// 	if err != nil {
+	// 		log.Println("解析 NodeID 失败:", n.Node, err)
+	// 		continue
+	// 	}
 
-		// node := o.client.Node(nodeID)
-		// class, err := node.NodeClass(o.ctx)
-		// if err != nil {
-		// 	log.Println("获取 NodeClass 失败:", n.Node, err)
-		// 	cannotSubscribe = append(cannotSubscribe, n.Node)
-		// 	continue
-		// }
+	// 	// node := o.client.Node(nodeID)
+	// 	// class, err := node.NodeClass(o.ctx)
+	// 	// if err != nil {
+	// 	// 	log.Println("获取 NodeClass 失败:", n.Node, err)
+	// 	// 	cannotSubscribe = append(cannotSubscribe, n.Node)
+	// 	// 	continue
+	// 	// }
 
-		// if class != ua.NodeClassVariable {
-		// 	// 不是 Variable 类型，不可订阅
-		// 	cannotSubscribe = append(cannotSubscribe, n.Node)
-		// 	continue
-		// }
+	// 	// if class != ua.NodeClassVariable {
+	// 	// 	// 不是 Variable 类型，不可订阅
+	// 	// 	cannotSubscribe = append(cannotSubscribe, n.Node)
+	// 	// 	continue
+	// 	// }
 
-		mi := o.valueRequest(nodeID, uint32(n.ID))
-		mon = append(mon, mi)
-	}
-	if len(cannotSubscribe) > 0 {
-		fmt.Println("不可订阅的节点", cannotSubscribe)
-		f3, _ := os.OpenFile("/www/opc/"+"cannotsubscribe.json", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
-		cannotSubscribeJson, _ := json.Marshal(cannotSubscribe)
-		f3.Write(cannotSubscribeJson)
-		f3.Close()
-	}
+	// 	mi := o.valueRequest(nodeID, uint32(n.ID))
+	// 	mon = append(mon, mi)
+	// }
+	// if len(cannotSubscribe) > 0 {
+	// 	fmt.Println("不可订阅的节点", cannotSubscribe)
+	// 	f3, _ := os.OpenFile("/www/opc/"+"cannotsubscribe.json", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	// 	cannotSubscribeJson, _ := json.Marshal(cannotSubscribe)
+	// 	f3.Write(cannotSubscribeJson)
+	// 	f3.Close()
+	// }
 	// ========================================不可订阅
 
-	fmt.Println("订阅节点环境档案", len(mon))
-	r, err := sub.Monitor(o.ctx, ua.TimestampsToReturnBoth, mon...)
-	if err != nil {
-		fmt.Println("订阅失败", err)
-		return
-	}
-	if r != nil && len(r.Results) > 0 {
-		for _, res := range r.Results {
-			if res.StatusCode != ua.StatusOK {
-				fmt.Println("订阅失败", res.StatusCode)
-				return
-			}
-		}
-	}
+	// fmt.Println("订阅节点环境档案", len(mon))
+	// r, err := sub.Monitor(o.ctx, ua.TimestampsToReturnBoth, mon...)
+	// if err != nil {
+	// 	fmt.Println("订阅失败", err)
+	// 	return
+	// }
+	// if r != nil && len(r.Results) > 0 {
+	// 	for _, res := range r.Results {
+	// 		if res.StatusCode != ua.StatusOK {
+	// 			fmt.Println("订阅失败", res.StatusCode)
+	// 			return
+	// 		}
+	// 	}
+	// }
 
-	o.sub = sub
+	// o.sub = sub
 
-	// go func() {
-	for {
-		select {
-		case <-o.ctx.Done():
-			{
-				// 重新连接
-				return fmt.Errorf("短线了")
-			}
-		case res := <-notifyCh:
-			fmt.Printf("Received publish notification: %v\n", res)
-			if res.Error != nil {
-				log.Print(res.Error)
-				continue
-			}
+	// // go func() {
+	// for {
+	// 	select {
+	// 	case <-o.ctx.Done():
+	// 		{
+	// 			// 重新连接
+	// 			return fmt.Errorf("短线了")
+	// 		}
+	// 	case res := <-notifyCh:
+	// 		fmt.Printf("Received publish notification: %v\n", res)
+	// 		if res.Error != nil {
+	// 			log.Print(res.Error)
+	// 			continue
+	// 		}
 
-			switch x := res.Value.(type) {
-			case *ua.DataChangeNotification:
-				for _, item := range x.MonitoredItems {
-					if item.Value == nil {
-						fmt.Println("item.Value == nil")
-						continue
-					}
-					// 打印值
-					if item.Value.Value == nil {
-						fmt.Println("item.Value.Value == nil")
-						continue
-					}
-					// 打印值
-					data := item.Value.Value.Value()
-					log.Printf("收到服务端数据 %v = %v ", item.ClientHandle, data)
-					if item.Value != nil {
-						data := Data{
-							ID:         uint64(item.ClientHandle),
-							DataType:   item.Value.Value.Type().String(),
-							Value:      item.Value.Value.Value(),
-							SourceTime: item.Value.SourceTimestamp,
-						}
-						// 判断gateway是否关闭
-						select {
-						case o.gateway <- data:
-							fmt.Println("发送到注册网关==")
-						default:
-						}
-					}
-				}
+	// 		switch x := res.Value.(type) {
+	// 		case *ua.DataChangeNotification:
+	// 			for _, item := range x.MonitoredItems {
+	// 				if item.Value == nil {
+	// 					fmt.Println("item.Value == nil")
+	// 					continue
+	// 				}
+	// 				// 打印值
+	// 				if item.Value.Value == nil {
+	// 					fmt.Println("item.Value.Value == nil")
+	// 					continue
+	// 				}
+	// 				// 打印值
+	// 				data := item.Value.Value.Value()
+	// 				log.Printf("收到服务端数据 %v = %v ", item.ClientHandle, data)
+	// 				if item.Value != nil {
+	// 					data := Data{
+	// 						ID:         uint64(item.ClientHandle),
+	// 						DataType:   item.Value.Value.Type().String(),
+	// 						Value:      item.Value.Value.Value(),
+	// 						SourceTime: item.Value.SourceTimestamp,
+	// 					}
+	// 					// 判断gateway是否关闭
+	// 					select {
+	// 					case o.gateway <- data:
+	// 						fmt.Println("发送到注册网关==")
+	// 					default:
+	// 					}
+	// 				}
+	// 			}
 
-			case *ua.EventNotificationList:
-				// for _, item := range x.Events {
-				// 	log.Printf("Event for client handle: %v\n", item.ClientHandle)
-				// 	for i, field := range item.EventFields {
-				// 		log.Printf("%v: %v of Type: %T", eventFieldNames[i], field.Value(), field.Value())
-				// 	}
-				// 	log.Println()
-				// }
+	// 		case *ua.EventNotificationList:
+	// 			// for _, item := range x.Events {
+	// 			// 	log.Printf("Event for client handle: %v\n", item.ClientHandle)
+	// 			// 	for i, field := range item.EventFields {
+	// 			// 		log.Printf("%v: %v of Type: %T", eventFieldNames[i], field.Value(), field.Value())
+	// 			// 	}
+	// 			// 	log.Println()
+	// 			// }
 
-			default:
-				log.Printf("what's this publish result? %T", res.Value)
-			}
-		}
-	}
+	// 		default:
+	// 			log.Printf("what's this publish result? %T", res.Value)
+	// 		}
+	// 	}
+	// }
 }
 
 // browseNodes 递归浏览节点并收集 NodeID

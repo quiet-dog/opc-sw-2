@@ -39,7 +39,7 @@ func InitKongTiao() {
 	var senserService service.ServiceModel
 	global.DB.Where("id = ?", 4).First(&senserService)
 
-	client := resty.New().SetTimeout(3 * time.Second).SetBaseURL("http://127.0.0.1:9020").SetAuthToken("MASTER_TOKEN_123456").SetDebug(true)
+	client := resty.New().SetTimeout(3 * time.Second).SetBaseURL("http://127.0.0.1:9020").SetAuthToken("MASTER_TOKEN_123456")
 
 	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
